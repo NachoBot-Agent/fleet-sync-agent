@@ -208,6 +208,35 @@ class ConfigTests(unittest.TestCase):
         self.assertIn("enabled", cfg)
 
 
+class SafeApiUrlTests(unittest.TestCase):
+    """The _safe_api_url sanitizer guards against the cipher-over-HTTP
+    leak — a stale http://starfleet.sc in fleet-sync-config.json must
+    be upgraded to https:// before the Bearer header is sent."""
+
+    def test_upgrades_known_public_hosts(self):
+        for original in ("http://starfleet.sc",
+                         "http://starfleet.sc/",
+                         "http://fleet.bobby.to",
+                         "http://fleet.nachobot.app",
+                         "http://STARFLEET.SC"):
+            with self.subTest(original=original):
+                self.assertEqual(sync_agent._safe_api_url(original).split("/api/")[0].split("://")[0], "https")
+
+    def test_leaves_https_alone(self):
+        self.assertEqual(sync_agent._safe_api_url("https://starfleet.sc"), "https://starfleet.sc")
+        self.assertEqual(sync_agent._safe_api_url("https://starfleet.sc/"), "https://starfleet.sc")
+
+    def test_leaves_unknown_http_hosts_alone(self):
+        # Localhost (dev/test) and unknown hostnames stay http://, so the
+        # E2E suite hitting http://localhost:8787 still works.
+        self.assertEqual(sync_agent._safe_api_url("http://localhost:8787"), "http://localhost:8787")
+        self.assertEqual(sync_agent._safe_api_url("http://192.168.1.5:8787"), "http://192.168.1.5:8787")
+
+    def test_handles_empty(self):
+        self.assertEqual(sync_agent._safe_api_url(""), "")
+        self.assertIsNone(sync_agent._safe_api_url(None))
+
+
 if __name__ == "__main__":
     runner = unittest.TextTestRunner(verbosity=2)
     suite = unittest.TestLoader().loadTestsFromModule(sys.modules[__name__])
