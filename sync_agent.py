@@ -50,6 +50,27 @@ POLL_INTERVAL_SEC = 2.0      # how often to re-read Game.log
 HEARTBEAT_SEC = 45           # republish even without changes after this
 USER_AGENT = "fleet-sync-agent/1.0"
 
+# Game.log can grow to hundreds of MB over a long session. We only ever
+# need recent context (last spawn, latest equipment, current location),
+# so cap the read at the trailing 16 MB. _read_tail() drops the first
+# (likely partial) line of the tail so we never half-parse a record.
+GAME_LOG_TAIL_BYTES = 16 * 1024 * 1024
+
+
+def _read_tail(path, max_bytes):
+    """Return the trailing `max_bytes` of a text file as a decoded string.
+    Drops the first line of the tail when truncation actually happened so
+    the parser doesn't trip on a half-record."""
+    size = path.stat().st_size
+    if size <= max_bytes:
+        return path.read_text(encoding="utf-8", errors="replace")
+    with open(path, "rb") as f:
+        f.seek(size - max_bytes)
+        blob = f.read()
+    text = blob.decode("utf-8", errors="replace")
+    nl = text.find("\n")
+    return text[nl + 1:] if nl != -1 else text
+
 # Captain report field allowlist (matches the server's allowlist)
 ALLOWED_REPORT_FIELDS = {"captain", "status", "location", "ship", "route",
                          "conditions", "reportedAt", "source"}
@@ -504,7 +525,7 @@ class Agent:
             self._set_state("no-log")
             return
         try:
-            text = game_log.read_text(encoding="utf-8", errors="replace")
+            text = _read_tail(game_log, GAME_LOG_TAIL_BYTES)
         except OSError as e:
             self.last_error = f"Cannot read Game.log: {e}"
             self._set_state("error")
