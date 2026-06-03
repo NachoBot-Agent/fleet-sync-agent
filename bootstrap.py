@@ -67,6 +67,7 @@ def remote_version():
 def install_or_update(remote_ver):
     print(f"Installing agent v{remote_ver}…")
     INSTALL_DIR.mkdir(parents=True, exist_ok=True)
+    install_root = INSTALL_DIR.resolve()
     blob = _http_get(REPO_ZIP, binary=True, timeout=60)
     with zipfile.ZipFile(io.BytesIO(blob)) as z:
         # GitHub zip wraps everything in fleet-sync-agent-<branch>/
@@ -83,7 +84,15 @@ def install_or_update(remote_ver):
             # Don't clobber the user's local config file.
             if rel in ("fleet-sync-config.json",):
                 continue
-            dst = INSTALL_DIR / rel
+            dst = (INSTALL_DIR / rel).resolve()
+            # Zip-slip guard: refuse any entry that resolves outside the
+            # install root. Protects against malicious zips with entries
+            # like '..\\..\\Windows\\System32\\evil.exe'.
+            try:
+                dst.relative_to(install_root)
+            except ValueError:
+                print(f"  refusing entry that escapes install dir: {member!r}")
+                return False
             dst.parent.mkdir(parents=True, exist_ok=True)
             with z.open(member) as src, open(dst, "wb") as out:
                 shutil.copyfileobj(src, out)
@@ -97,9 +106,14 @@ def install_requirements():
         return
     print("Ensuring Python dependencies…")
     try:
+        # --require-hashes refuses to install a wheel whose SHA-256 doesn't
+        # match the lock. Defends against a hijacked PyPI mirror or a
+        # squatted-package version bump. Lock is regenerated via
+        # pip-compile --generate-hashes --strip-extras (see requirements.in).
         subprocess.run(
             [sys.executable, "-m", "pip", "install", "--quiet",
-             "--disable-pip-version-check", "-r", str(req)],
+             "--disable-pip-version-check", "--require-hashes",
+             "-r", str(req)],
             check=False,
         )
     except OSError as e:

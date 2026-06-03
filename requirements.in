@@ -1,0 +1,7 @@
+# Top-level dependencies of the gaming-PC sync agent.
+# requirements.txt is generated from this file via:
+#     pip-compile --generate-hashes --strip-extras requirements.in
+# Re-run that after editing this file.
+
+pystray>=0.19
+Pillow>=10.0
