@@ -1,0 +1,5 @@
+# Fleet Sync Agent dependencies (gaming PC).
+# stdlib covers HTTP + log parsing + tkinter settings window.
+# pystray + Pillow are needed for the system tray icon.
+pystray>=0.19
+Pillow>=10.0
