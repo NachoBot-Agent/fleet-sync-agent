@@ -413,6 +413,32 @@ class Agent:
         self.stop_event = threading.Event()
         self.lock = threading.Lock()
 
+    def _set_state(self, new_state):
+        """Update self.state and emit a one-line stdout message on transitions
+        (state change OR captain change). Keeps the terminal narrating
+        without spamming during steady-state polls."""
+        key = (new_state, self.last_captain, self.last_error if new_state == "error" else None)
+        if getattr(self, "_last_state_key", None) == key:
+            self.state = new_state
+            return
+        self._last_state_key = key
+        self.state = new_state
+        ts = datetime.now().strftime("%H:%M:%S")
+        api = self.cfg.get("api", "?")
+        if new_state == "connected":
+            if self.last_captain:
+                print(f"[{ts}] running · publishing {self.last_captain} -> {api}", flush=True)
+            else:
+                print(f"[{ts}] running · Game.log readable, waiting for captain to spawn in-game", flush=True)
+        elif new_state == "paused":
+            print(f"[{ts}] paused (right-click the tray icon -> Resume sync)", flush=True)
+        elif new_state == "no-log":
+            print(f"[{ts}] Game.log not found at {self.cfg.get('live_dir')!s} -- open Settings", flush=True)
+        elif new_state == "error":
+            print(f"[{ts}] error: {self.last_error}", flush=True)
+        elif new_state == "starting":
+            print(f"[{ts}] starting...", flush=True)
+
     def status_text(self):
         if self.state == "connected":
             who = self.last_captain or "(captain not yet seen)"
@@ -430,18 +456,18 @@ class Agent:
         with self.lock:
             self.cfg["enabled"] = False
             save_config(self.cfg)
-            self.state = "paused"
+            self._set_state("paused")
 
     def resume(self):
         with self.lock:
             self.cfg["enabled"] = True
             save_config(self.cfg)
-            self.state = "starting"
+            self._set_state("starting")
 
     def reload_config(self):
         with self.lock:
             self.cfg = load_config()
-            self.state = "starting"
+            self._set_state("starting")
             self.last_report_fingerprint = None
 
     def loop(self):
@@ -449,35 +475,34 @@ class Agent:
             try:
                 self._tick()
             except Exception as e:
-                self.state = "error"
                 self.last_error = str(e)
-                print(f"[agent] error: {e!r}", file=sys.stderr)
+                self._set_state("error")
             self.stop_event.wait(POLL_INTERVAL_SEC)
 
     def _tick(self):
         with self.lock:
             cfg = dict(self.cfg)
         if not cfg.get("enabled"):
-            self.state = "paused"
+            self._set_state("paused")
             return
         if not cfg.get("cipher"):
-            self.state = "error"
             self.last_error = "No account cipher configured. Open Settings."
+            self._set_state("error")
             return
         live_dir = Path(cfg["live_dir"])
         game_log = live_dir / "Game.log"
         if not game_log.exists():
-            self.state = "no-log"
+            self._set_state("no-log")
             return
         try:
             text = game_log.read_text(encoding="utf-8", errors="replace")
         except OSError as e:
-            self.state = "error"
             self.last_error = f"Cannot read Game.log: {e}"
+            self._set_state("error")
             return
         report = parse_game_log(text, game_log)
         if not report or not report.get("captain"):
-            self.state = "connected"  # connected but no signal yet
+            self._set_state("connected")  # connected but no signal yet
             return
 
         # Skip if unchanged AND inside heartbeat window — fingerprint excludes
@@ -488,23 +513,23 @@ class Agent:
         now = time.monotonic()
         if (fingerprint == self.last_report_fingerprint and self.last_publish_at and
                 (now - getattr(self, "_last_publish_mono", 0)) < HEARTBEAT_SEC):
-            self.state = "connected"
+            self._set_state("connected")
             return
 
         status, body = publish_report(cfg["api"], cfg["cipher"], report)
         if status in (200, 202):
-            self.state = "connected"
             self.last_publish_at = datetime.now()
             self.last_captain = report["captain"]
             self.last_report_fingerprint = fingerprint
             self._last_publish_mono = now
             self.last_error = None
+            self._set_state("connected")
         elif status == 401:
-            self.state = "error"
             self.last_error = "Account cipher rejected (401). Open Settings and paste the cipher from your account page."
+            self._set_state("error")
         else:
-            self.state = "error"
-            self.last_error = f"Server URL returned HTTP {status}: {body[:200]}"
+            self.last_error = f"Server returned HTTP {status}: {body[:200]}"
+            self._set_state("error")
 
 
 # ── Settings window (tkinter) ──────────────────────────────────────
@@ -689,6 +714,18 @@ def run_headless(agent):
 
 def main():
     agent = Agent()
+    ts = datetime.now().strftime("%H:%M:%S")
+    api = agent.cfg.get("api", "?")
+    live_dir = agent.cfg.get("live_dir", "?")
+    print(f"[{ts}] verifying configuration...", flush=True)
+    print(f"          server   : {api}", flush=True)
+    print(f"          Game.log : {live_dir}", flush=True)
+    print(f"          cipher   : {'set' if agent.cfg.get('cipher') else 'MISSING'}", flush=True)
+    print(f"          enabled  : {agent.cfg.get('enabled', False)}", flush=True)
+    print(f"[{ts}] tray icon up · the agent is running.", flush=True)
+    print(f"          Right-click the tray icon (system tray, bottom-right) for Settings, Pause, Quit.", flush=True)
+    print(f"          State updates will appear below as they change.", flush=True)
+    print(f"          Leave this window open; closing it stops the agent.", flush=True)
     watcher = threading.Thread(target=agent.loop, daemon=True)
     watcher.start()
 
