@@ -78,15 +78,21 @@ FRIENDLY_TARGETS = {
 # ── Config persistence ──────────────────────────────────────────────
 
 def load_config():
-    if CONFIG_PATH.exists():
-        try:
-            return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return {"api": DEFAULT_FLEET_API,
-            "cipher": "",
-            "live_dir": str(DEFAULT_LIVE_DIR),
-            "enabled": True}
+    defaults = {"api": DEFAULT_FLEET_API,
+                "cipher": "",
+                "live_dir": str(DEFAULT_LIVE_DIR),
+                "enabled": True}
+    if not CONFIG_PATH.exists():
+        return defaults
+    try:
+        loaded = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return defaults
+    # Merge defaults under whatever was on disk so a partial config (e.g.
+    # the one bootstrap writes — cipher + api + pilot only) still gets
+    # `enabled: True` and a usable `live_dir`. Without this the agent
+    # silently starts paused on every fresh install.
+    return {**defaults, **loaded}
 
 
 def save_config(cfg):
