@@ -114,7 +114,13 @@ def load_config():
     # the one bootstrap writes — cipher + api + pilot only) still gets
     # `enabled: True` and a usable `live_dir`. Without this the agent
     # silently starts paused on every fresh install.
-    return {**defaults, **loaded}
+    merged = {**defaults, **loaded}
+    # Sanitize cfg['api'] once at load time so every downstream reader
+    # (startup banner, state narration, publish_report) sees the safe
+    # URL. Defends against stale http:// URLs from older personalized
+    # .cmd files that pre-dated the server's ProxyFix middleware.
+    merged["api"] = _safe_api_url(merged.get("api"))
+    return merged
 
 
 def save_config(cfg):
@@ -400,12 +406,36 @@ def parse_game_log(text, game_log_path=None):
 
 # ── HTTP publish ────────────────────────────────────────────────────
 
+# Public Fleet Ops hosts we always reach over HTTPS. If an older
+# fleet-sync-config.json or a stale FLEET_API_URL env var lands one of
+# these as plain http://, we silently upgrade — sending the Bearer
+# cipher in clear would leak it before Cloudflare's edge redirects.
+_KNOWN_HTTPS_HOSTS = ("starfleet.sc", "fleet.bobby.to", "fleet.nachobot.app")
+
+
+def _safe_api_url(api):
+    """Defensive cleanup of cfg['api']: trim, strip trailing slash, and
+    upgrade plain HTTP to HTTPS for our known public hostnames."""
+    if not api:
+        return api
+    cleaned = api.strip().rstrip("/")
+    if cleaned.startswith("http://"):
+        host = cleaned[len("http://"):].split("/", 1)[0].split(":", 1)[0].lower()
+        if host in _KNOWN_HTTPS_HOSTS:
+            cleaned = "https://" + cleaned[len("http://"):]
+    return cleaned
+
+
 def publish_report(api, cipher, report):
     """POST a report. Returns (status_code, response_text). Raises on
     network errors so callers can surface them in the tray icon."""
+    # cfg["api"] is already sanitized by load_config, but call again as
+    # a second-line defense in case a caller forwards a raw user-typed
+    # URL from the Settings dialog.
+    api = _safe_api_url(api) or api.rstrip("/")
     body = json.dumps(report).encode()
     req = urllib.request.Request(
-        f"{api.rstrip('/')}/api/report",
+        f"{api}/api/report",
         data=body, method="POST",
         headers={
             "Authorization": f"Bearer {cipher}",
