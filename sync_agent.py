@@ -29,6 +29,7 @@ import re
 import sys
 import threading
 import time
+import traceback
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -475,7 +476,15 @@ class Agent:
             try:
                 self._tick()
             except Exception as e:
-                self.last_error = str(e)
+                # str(e) on its own ('unhashable type: dict') is useless
+                # for diagnosis — print the full traceback so the user can
+                # paste it in support of a bug report. The state machine
+                # still reflects the short message on the tray icon.
+                self.last_error = f"{type(e).__name__}: {e}"
+                ts = datetime.now().strftime("%H:%M:%S")
+                print(f"[{ts}] tick raised {type(e).__name__}: {e}", flush=True)
+                traceback.print_exc(file=sys.stdout)
+                sys.stdout.flush()
                 self._set_state("error")
             self.stop_event.wait(POLL_INTERVAL_SEC)
 
